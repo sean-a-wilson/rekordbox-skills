@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+
+# Machine-local Claude settings (personal paths, permissions)
+.claude/settings.local.json
