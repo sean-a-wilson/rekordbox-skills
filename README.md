@@ -12,6 +12,10 @@ it, and ask in plain language.
 - **[playlist-dedupe](.agents/skills/playlist-dedupe/)** — find and prune
   duplicate tracks in a playlist (or your whole library), keeping the best-quality
   copy. Version-aware and reviews every group with you before changing anything.
+- **[upgrade-finder](.agents/skills/upgrade-finder/)** — scan a playlist for
+  low-bitrate tracks and find higher-quality copies of the same recording already
+  in your library (lossless beats lossy, then higher bitrate). Read-only: it shows
+  a report and changes nothing.
 
 Each skill's own README explains what it does and how to use it.
 

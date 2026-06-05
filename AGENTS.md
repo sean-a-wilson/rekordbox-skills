@@ -18,6 +18,7 @@ user's request matches:
 | Skill | What it does | Route here when… |
 | --- | --- | --- |
 | **[playlist-dedupe](.agents/skills/playlist-dedupe/)** | Finds and prunes duplicate tracks in a playlist or the whole library, keeping the best-quality copy; version-aware and reviews every group with the user before writing. | The user wants to clean up, dedupe, find duplicates in, or remove repeated / lower-quality tracks from a rekordbox playlist or library — e.g. *"this playlist has a bunch of dupes"* or *"I have the same song twice in different quality."* |
+| **[upgrade-finder](.agents/skills/upgrade-finder/)** | Scans a playlist's low-bitrate (≤320k) tracks and searches the whole library for a higher-quality file of the same recording (lossless beats lossy, then higher bitrate). Read-only report; takes no action. | The user wants to find higher-quality versions they already own — e.g. *"are there better copies of these tracks?"*, *"which of these MP3s do I have a FLAC/WAV of?"*, *"find upgrades for my Disco playlist."* |
 
 When a skill matches, load its `SKILL.md` and follow it — the skill's own docs are
 authoritative for its workflow, schema, and guardrails (see e.g.
