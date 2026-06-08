@@ -474,3 +474,43 @@ def build_group_actions(winner: dict, losers: list[dict], winner_pids: set,
                                 0 if a["type"] == "add" else 1,
                                 a.get("content_id", "")))
     return actions
+
+
+# ---------------------------------------------------------------------------
+# Playlist membership (rich -- carries song_id + track_no for writes)
+# ---------------------------------------------------------------------------
+
+def is_excluded(path: str, exclude_terms) -> bool:
+    """A playlist is off-limits if any exclude term appears anywhere in its full
+    folder path. Case-insensitive substring; protects both a playlist named
+    '... Backup' and anything inside a 'Backups/' folder."""
+    p = (path or "").lower()
+    return any(term.lower() in p for term in exclude_terms)
+
+
+def playlist_memberships(db, tables, index, content_id, exclude_terms):
+    """Every playlist a given content id belongs to, carrying the membership row
+    id (`song_id`) and position (`track_no`) that removal and re-insertion need,
+    plus an `excluded` flag so protected (Backup) playlists are never acted on.
+
+    Computed for EVERY member (winner included) so the action builder can place
+    the winner where the loser sat and skip playlists the winner already lives
+    in. Mirrors the dedupe skill's detector so the two produce identical apply
+    manifests."""
+    rows = (db.get_playlist_songs()
+            .filter(tables.DjmdSongPlaylist.ContentID == str(content_id))
+            .all())
+    out = []
+    for r in rows:
+        pid = str(r.PlaylistID)
+        path = playlist_path(index, pid)
+        out.append({
+            "song_id": str(r.ID),
+            "playlist_id": pid,
+            "playlist_name": index[pid].Name if pid in index else "(unknown)",
+            "playlist_path": path,
+            "track_no": int(r.TrackNo or 0),
+            "excluded": is_excluded(path, exclude_terms),
+        })
+    out.sort(key=lambda m: (m["playlist_path"].lower(), m["track_no"]))
+    return out
