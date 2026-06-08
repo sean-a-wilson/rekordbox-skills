@@ -16,6 +16,10 @@ it, and ask in plain language.
   low-bitrate tracks and find higher-quality copies of the same recording already
   in your library (lossless beats lossy, then higher bitrate). Read-only: it shows
   a report and changes nothing.
+- **[audio-converter](.agents/skills/audio-converter/)** — convert audio files
+  between WAV, AIFF, and AAC using macOS's built-in `afconvert` (nothing to
+  install). Standalone and non-destructive; it won't do lossy→lossless or
+  same-format conversions. (MP3 not supported yet.)
 
 Each skill's own README explains what it does and how to use it.
 
