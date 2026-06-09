@@ -178,21 +178,30 @@ python3 scripts/apply_changes.py /tmp/rb-manifest.json --apply    # write for re
    restore point they can see and re-import inside rekordbox. Protected (Backup)
    playlists are never modified, so they're never snapshotted.
 3. **Edits** — the order matters and is deliberate: **all winner-adds are
-   committed first, then losers are removed.** `pyrekordbox`'s
-   `remove_from_playlist` commits each removal immediately, so a single
-   all-or-nothing transaction is impossible. By committing the adds first, a
+   committed first, then losers are removed.** By committing the adds first, a
    failure during the add phase rolls back cleanly and aborts **before** any
    removal — the worst case leaves duplicates in place, never a gap. Adds are
    idempotent (a winner already present is skipped), so re-running after a
    partial failure is safe. Adds also tolerate playlists whose `Attribute` isn't
    `0` (e.g. `-128`), which `pyrekordbox` would otherwise reject.
 
+   **Removals are sync-safe tombstones, not hard deletes.** Instead of physically
+   deleting the loser's playlist row, the skill marks it the way rekordbox itself
+   does (`rb_local_deleted=1`, `rb_data_status=262`, a fresh row USN) and closes
+   the resulting `TrackNo` gaps. This matters because a hard-deleted row leaves no
+   record for **Cloud Library Sync** to upload, so on the next sync the cloud's
+   still-present copy wins and the removal silently reverts. A tombstone uploads
+   as a real deletion, so the change sticks. (All read paths ignore tombstoned
+   rows, so a removed track never reappears in scans.)
+
 After writing, the script **verifies** the database matches the manifest and, on
 any mismatch, prints a loud warning pointing at the full DB backup. It writes
 `applied_log.json` listing the DB-file backup, every snapshot playlist, and the
-verification result. Tell the user to reopen rekordbox to verify, that the
-`Claude Backups` folder holds their in-app restore points, and that
-`rekordbox-db-backups/` holds the permanent full-database backups.
+verification result. If **Cloud Library Sync** (e.g. Dropbox) is enabled, it
+prints a heads-up: removals upload on the next sync, so reopen rekordbox and let
+a sync finish before judging the result. Tell the user to reopen rekordbox to
+verify, that the `Claude Backups` folder holds their in-app restore points, and
+that `rekordbox-db-backups/` holds the permanent full-database backups.
 
 ## Quality ranking (how the winner is recommended)
 

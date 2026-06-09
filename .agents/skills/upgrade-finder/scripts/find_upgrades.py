@@ -54,7 +54,8 @@ def memberships_for(db, tables, index, content_id, exclude_terms):
     """Every playlist a given content id belongs to, as full folder paths, with
     protected (Backup) playlists flagged so the report can footnote them."""
     rows = (db.get_playlist_songs()
-            .filter(tables.DjmdSongPlaylist.ContentID == content_id)
+            .filter(tables.DjmdSongPlaylist.ContentID == content_id,
+                    tables.DjmdSongPlaylist.rb_local_deleted == 0)
             .all())
     out = []
     for r in rows:
@@ -177,7 +178,14 @@ def main() -> int:
     library = [track_facts(c) for c in db.get_content()]
 
     # Candidates: this playlist's lossy tracks at/under the bitrate ceiling.
-    playlist_tracks = [track_facts(c) for c in db.get_playlist_contents(target)]
+    # get_playlist_contents does not exclude tombstoned (rb_local_deleted=1)
+    # memberships -- removals pending cloud-sync upload -- so intersect with the
+    # playlist's live song rows to avoid scanning an already-removed track.
+    live_ids = {str(r.ContentID) for r in db.get_playlist_songs()
+                .filter(tables.DjmdSongPlaylist.PlaylistID == pid,
+                        tables.DjmdSongPlaylist.rb_local_deleted == 0).all()}
+    playlist_tracks = [track_facts(c) for c in db.get_playlist_contents(target)
+                       if str(c.ID) in live_ids]
     candidates = [t for t in playlist_tracks
                   if not t["lossless"] and 0 < t["bitrate"] <= args.max_bitrate]
 

@@ -178,7 +178,8 @@ def memberships_for(db, tables, index, content_id, exclude_terms):
     never acted on. Computed for EVERY member (winner included) so decide.py can
     repick the keeper without touching the database."""
     rows = (db.get_playlist_songs()
-            .filter(tables.DjmdSongPlaylist.ContentID == content_id)
+            .filter(tables.DjmdSongPlaylist.ContentID == content_id,
+                    tables.DjmdSongPlaylist.rb_local_deleted == 0)
             .all())
     out = []
     for r in rows:
@@ -226,7 +227,14 @@ def main() -> int:
             f"({exclude_terms}) and is protected. Nothing to do. "
             f"Use --exclude-path '' to override."
         )
-    contents = list(db.get_playlist_contents(target))
+    # get_playlist_contents does not exclude tombstoned (rb_local_deleted=1)
+    # memberships -- removals pending cloud-sync upload -- so intersect with the
+    # playlist's live song rows; otherwise an already-removed track would be
+    # re-detected as a duplicate.
+    live_ids = {str(r.ContentID) for r in db.get_playlist_songs()
+                .filter(tables.DjmdSongPlaylist.PlaylistID == pid,
+                        tables.DjmdSongPlaylist.rb_local_deleted == 0).all()}
+    contents = [c for c in db.get_playlist_contents(target) if str(c.ID) in live_ids]
     tracks = [track_facts(c) for c in contents]
 
     groups = cluster_duplicates(tracks, args.title_threshold, args.artist_threshold)

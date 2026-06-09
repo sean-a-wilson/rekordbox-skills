@@ -183,7 +183,16 @@ python3 scripts/apply_changes.py /tmp/rb-upgrade-manifest.json --apply
 
 It saves a permanent copy of `master.db` under `rekordbox-db-backups/`, snapshots
 every affected playlist under `Claude Backups/`, then swaps in the better files.
-Tell the user to reopen rekordbox to see the results.
+
+**Removals are sync-safe tombstones, not hard deletes.** When the lossy loser is
+removed, its playlist row is marked the way rekordbox itself marks a deletion
+(`rb_local_deleted=1`, `rb_data_status=262`, a fresh row USN) rather than
+physically deleted. A hard-deleted row leaves nothing for **Cloud Library Sync**
+to upload, so the next sync re-adds it from the cloud and the upgrade silently
+reverts; a tombstone uploads as a real deletion and sticks. If Cloud Library Sync
+(e.g. Dropbox) is enabled, the script prints a heads-up — reopen rekordbox and
+let a sync finish before judging the result. Tell the user to reopen rekordbox to
+see the results.
 
 ## Guardrails
 

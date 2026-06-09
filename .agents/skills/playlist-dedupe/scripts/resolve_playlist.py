@@ -33,9 +33,13 @@ def main() -> int:
     db = get_db()
     index = build_playlist_index(db)
 
-    # Count tracks per playlist in one pass over the membership table.
+    # Count tracks per playlist in one pass over the membership table. Skip
+    # tombstoned rows (rb_local_deleted=1) -- removals pending cloud sync upload
+    # are not live members and must not inflate the count.
     counts: dict[str, int] = {}
     for sp in db.get_playlist_songs():
+        if getattr(sp, "rb_local_deleted", 0):
+            continue
         pid = str(sp.PlaylistID)
         counts[pid] = counts.get(pid, 0) + 1
 

@@ -229,10 +229,12 @@ def snapshot_playlists(db, tables, index, affected, human_stamp):
 def content_in_playlist(db, tables, playlist_id, content_id) -> bool:
     """True if `content_id` is already a member of `playlist_id`. Lets adds be
     idempotent, so a re-run after a partial failure never creates a duplicate
-    membership."""
+    membership. Tombstoned rows (rb_local_deleted=1) are removals pending cloud
+    upload -- they are NOT live memberships, so they are excluded."""
     return (db.get_playlist_songs()
             .filter(tables.DjmdSongPlaylist.PlaylistID == str(playlist_id),
-                    tables.DjmdSongPlaylist.ContentID == str(content_id))
+                    tables.DjmdSongPlaylist.ContentID == str(content_id),
+                    tables.DjmdSongPlaylist.rb_local_deleted == 0)
             .count() > 0)
 
 
@@ -261,15 +263,56 @@ def add_with_attr_bypass(db, playlist_id, content_id, track_no=None):
             db.flush()
 
 
+# A rekordbox-deleted playlist song is not removed from the table -- it is
+# TOMBSTONED: the row stays with rb_local_deleted=1 and rb_data_status=262 (a
+# live row is rb_data_status=256, rb_local_deleted=0). The bumped row USN that
+# commit() assigns is what Cloud Library Sync uploads, so the deletion reaches
+# the cloud and is not re-downloaded on the next sync. A hard delete leaves no
+# such tombstone, so the cloud's still-present copy wins and the removal reverts
+# (observed with Dropbox sync). rb_local_synced=0 marks the row pending upload.
+TOMBSTONE_DATA_STATUS = 262
+
+
+def tombstone_remove(db, tables, song_id, now) -> int:
+    """Soft-delete one DjmdSongPlaylist row the way rekordbox does, and return its
+    TrackNo so the caller can renumber the rows left behind. The attribute writes
+    are tracked by the registry, so commit() assigns the row a fresh local USN."""
+    song = db.query(tables.DjmdSongPlaylist).filter_by(ID=str(song_id)).one()
+    track_no = int(song.TrackNo or 0)
+    song.rb_local_deleted = 1
+    song.rb_data_status = TOMBSTONE_DATA_STATUS
+    song.rb_local_synced = 0
+    song.updated_at = now
+    return track_no
+
+
+def renumber_after_removals(db, tables, playlist_id, removed_track_nos, now) -> None:
+    """Close the gaps left by tombstoned rows: every remaining LIVE row shifts down
+    by the count of removed positions below it, mirroring rekordbox's own removal.
+    Only changed rows are touched, so we don't churn USNs on untouched tracks."""
+    removed = sorted(removed_track_nos)
+    live = (db.get_playlist_songs()
+            .filter(tables.DjmdSongPlaylist.PlaylistID == str(playlist_id),
+                    tables.DjmdSongPlaylist.rb_local_deleted == 0)
+            .all())
+    for row in live:
+        old = int(row.TrackNo or 0)
+        shift = sum(1 for t in removed if t < old)
+        if shift:
+            row.TrackNo = old - shift
+            row.updated_at = now
+
+
 def verify_applied(db, tables, adds, removes) -> list[str]:
     """After writing, confirm the DB matches intent: every removed loser is gone
     from its original playlist and every winner is present where it was added.
     (Membership is checked by playlist id, so the backup snapshots -- which have
-    their own ids -- never confuse the result.) Returns a list of
-    human-readable discrepancies; empty means everything verified."""
+    their own ids -- never confuse the result.) Tombstoned rows count as gone.
+    Returns a list of human-readable discrepancies; empty means all verified."""
     def members(cid):
         rows = (db.get_playlist_songs()
-                .filter(tables.DjmdSongPlaylist.ContentID == str(cid)).all())
+                .filter(tables.DjmdSongPlaylist.ContentID == str(cid),
+                        tables.DjmdSongPlaylist.rb_local_deleted == 0).all())
         return {str(r.PlaylistID) for r in rows}
 
     problems = []
@@ -280,6 +323,23 @@ def verify_applied(db, tables, adds, removes) -> list[str]:
         if str(a["playlist_id"]) not in members(a["content_id"]):
             problems.append(f"MISSING ADD: content {a['content_id']} -> {a['playlist_path']}")
     return problems
+
+
+def cloud_sync_service(db) -> str:
+    """Name of the configured rekordbox Cloud Library Sync service (e.g.
+    'Dropbox'), or '' if none. Read-only, best-effort -- used only to print a
+    heads-up that tombstoned removals upload on the next sync."""
+    try:
+        from sqlalchemy import text
+        with db.engine.connect() as con:
+            row = con.execute(text(
+                "SELECT Reserved2 FROM djmdCloudProperty "
+                "WHERE Reserved1='SyncService' "
+                "AND (rb_local_deleted IS NULL OR rb_local_deleted=0) LIMIT 1"
+            )).fetchone()
+        return (row[0] or "") if row else ""
+    except Exception:
+        return ""
 
 
 def main() -> int:
@@ -366,13 +426,11 @@ def main() -> int:
         raise SystemExit(f"Failed creating backup playlists -- rolled back, nothing written: {e}")
 
     # ---- Apply, in an order that CANNOT lose a track ----
-    # pyrekordbox's remove_from_playlist commits each removal immediately, so a
-    # single all-or-nothing transaction is impossible. Instead we do every ADD
-    # first and commit them; only once the winners are safely in place do we
-    # REMOVE the losers. If any add fails we roll back (adds are NOT
-    # auto-committed) and abort BEFORE removing anything -- so the worst case
-    # leaves duplicates in place, never a gap. Adds are idempotent (skip a winner
-    # already present), so re-running after a partial failure is safe.
+    # We do every ADD first and commit them; only once the winners are safely in
+    # place do we tombstone the losers (a separate commit). If any add fails we
+    # roll back and abort BEFORE removing anything -- so the worst case leaves
+    # duplicates in place, never a gap. Adds are idempotent (skip a winner already
+    # present), so re-running after a partial failure is safe.
     applied = {"adds": 0, "removes": 0, "skipped_adds": 0}
     try:
         for a in adds:
@@ -390,13 +448,33 @@ def main() -> int:
             f"backup snapshots already created. Restore point: {backup}\nError: {e}"
         )
 
+    # Removals are TOMBSTONES, not hard deletes, so Cloud Library Sync uploads
+    # them instead of re-adding the track on the next sync (see tombstone_remove).
+    # We tombstone every loser, close the TrackNo gaps among the survivors, then
+    # commit once -- a single all-or-nothing removal pass. The winners are already
+    # committed above, so even a failed commit here only leaves duplicates behind,
+    # never a gap.
     remove_errors = []
+    now = datetime.now()
+    removed_by_pl: dict[str, list[int]] = {}
     for r in removes:
         try:
-            db.remove_from_playlist(r["playlist_id"], r["song_id"])  # auto-commits
+            track_no = tombstone_remove(db, tables, r["song_id"], now)
+            removed_by_pl.setdefault(str(r["playlist_id"]), []).append(track_no)
             applied["removes"] += 1
         except Exception as e:
             remove_errors.append(f"remove {r['song_id']} from {r['playlist_path']}: {e}")
+    for pid, removed_track_nos in removed_by_pl.items():
+        renumber_after_removals(db, tables, pid, removed_track_nos, now)
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise SystemExit(
+            "Removal commit failed -- rolled back, so no loser was removed (the "
+            "winners added above remain in place; worst case is leftover "
+            f"duplicates, never a gap). Restore point: {backup}\nError: {e}"
+        )
 
     # ---- Verify the database matches the manifest's intent ----
     problems = verify_applied(db, tables, adds, removes)
@@ -422,6 +500,12 @@ def main() -> int:
     print(f"Created {len(snapshots)} in-app backup playlist(s) under '{BACKUP_ROOT}/'.")
     print(f"Full DB backup: {backup}")
     print(f"Audit log: {log_path}")
+
+    sync = cloud_sync_service(db)
+    if sync:
+        print(f"\nNote: Cloud Library Sync ({sync}) is enabled. Removals are written as")
+        print("tombstones and upload on the next sync -- reopen rekordbox and let a sync")
+        print("finish before judging the result, or the cloud copy may look unchanged.")
 
     if remove_errors:
         print("\nWARNING: some removals failed. Winners were already added, so no")
