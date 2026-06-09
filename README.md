@@ -55,3 +55,7 @@ Each skill's own README explains what it does and how to use it.
      directly, including `master.db` and any backups a skill creates.
 
 4. Ask Claude to do the thing — e.g. *"dedupe my 'Disco' playlist."*
+
+## Contributors
+Sean Wilson - Moon Trip
+Instagram: https://www.instagram.com/moontripdisco
