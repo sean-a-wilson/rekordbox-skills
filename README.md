@@ -18,6 +18,10 @@ it, and ask in plain language.
   low-bitrate tracks and find higher-quality copies of the same recording already
   in your library (lossless beats lossy, then higher bitrate). Read-only: it shows
   a report and changes nothing.
+- **[version-finder](.agents/skills/version-finder/)** — ask "what versions of
+  this track do I have?" and get a read-only table of every version, edit, and
+  remix already in your library (Version, Format, Bitrate, BPM, Key, and the
+  playlists each lives in), one row per file. Version-aware; changes nothing.
 - **[audio-converter](.agents/skills/audio-converter/)** — convert audio files
   between WAV, AIFF, and AAC using macOS's built-in `afconvert` (nothing to
   install). Standalone and non-destructive; it won't do lossy→lossless or
