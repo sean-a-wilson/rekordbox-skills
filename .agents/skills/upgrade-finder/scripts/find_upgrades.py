@@ -2,17 +2,21 @@
 """Find higher-quality versions you already own of a playlist's low-bitrate tracks.
 
 For each track in the playlist that is lossy and <=320 kbps, this scans the
-ENTIRE rekordbox library for a file of the **same recording** that ranks higher
-on quality (lossless > bitrate > size). It writes a read-only JSON report; it
-never touches the database and takes no action -- applying an upgrade is out of
-scope for this skill.
+ENTIRE rekordbox library for a higher-quality file (lossless > bitrate > size) of
+the same song, and classifies the pair three ways -- the same buckets the
+playlist-dedupe skill uses -- so the report can show three tables:
 
-"Same recording" is matched strictly so we never suggest a different version as
-an upgrade: a strong title match (the dedupe matcher's exact tier, not the loose
-fuzzy rescue), an artist match, an **identical version-marker set** (so an
-"(Extended Mix)" is never offered as an upgrade for the plain mix), and -- when
-both lengths are known -- a close duration. The quality comparison reuses the
-same `rank_key` the dedupe skill uses to pick a winner.
+  * exact              -- same recording for sure (identical version tags,
+                          matching length, strong title): a confident upgrade.
+  * looks_same         -- no conflicting tags and length+BPM line up tightly:
+                          almost certainly the same take (remaster, tag drift).
+  * different_versions -- conflicting version tags or notably different
+                          length/BPM: a higher-quality DIFFERENT version.
+
+Each candidate is reported once, in the most-confident tier where a real quality
+upgrade exists (exact > looks_same > different_versions). The report is read-only
+-- it never touches the database; applying a swap is a separate, opt-in step
+(build_upgrade_manifest -> decide_upgrade -> apply_changes).
 
 Read-only and deterministic: same library + same thresholds => same report.
 
@@ -31,15 +35,15 @@ from rb_common import (
     DEFAULT_ARTIST_THRESHOLD,
     DEFAULT_TITLE_THRESHOLD,
     build_playlist_index,
-    bpms_close,
-    effective_artist,
+    classify_group,
     get_db,
-    lengths_close,
+    pair_match,
     playlist_path,
     rank_key,
-    similarity,
     track_facts,
 )
+
+TIER_ORDER = ["exact", "looks_same", "different_versions"]
 
 
 def is_excluded(path: str, exclude_terms) -> bool:
@@ -54,7 +58,8 @@ def memberships_for(db, tables, index, content_id, exclude_terms):
     """Every playlist a given content id belongs to, as full folder paths, with
     protected (Backup) playlists flagged so the report can footnote them."""
     rows = (db.get_playlist_songs()
-            .filter(tables.DjmdSongPlaylist.ContentID == content_id)
+            .filter(tables.DjmdSongPlaylist.ContentID == content_id,
+                    tables.DjmdSongPlaylist.rb_local_deleted == 0)
             .all())
     out = []
     for r in rows:
@@ -68,44 +73,6 @@ def memberships_for(db, tables, index, content_id, exclude_terms):
         })
     out.sort(key=lambda m: m["playlist_path"].lower())
     return out
-
-
-def is_same_recording(cand: dict, lib: dict, title_thr: float, artist_thr: float):
-    """Strict 'same recording' test for an upgrade candidate -> the better file.
-
-    Returns a confidence float (0..1) when the pair is the same recording, else
-    None. Stricter than the dedupe grouping: the version-marker sets must be
-    identical (no alternate versions), the title must clear the *strong* bar
-    (the loose duration/BPM rescue is deliberately excluded), the artists must
-    match, and any known durations must agree. This guards a report that takes
-    no action -- a false positive here is a wrong upgrade suggestion."""
-    if cand["content_id"] == lib["content_id"]:
-        return None
-    # Same version identity: an "(Extended Mix)" is not an upgrade for the plain
-    # mix, and vice versa.
-    if frozenset(cand["markers"]) != frozenset(lib["markers"]):
-        return None
-
-    t_sim = similarity(cand["base_title"], lib["base_title"])
-    dur_close = lengths_close(cand["length"], lib["length"])
-    bpm_close = bpms_close(cand["bpm"], lib["bpm"])
-    # Strong tier only (mirrors detect_duplicates._pair_matches Tier A/B); the
-    # loose Tier C fuzzy rescue is intentionally NOT accepted here.
-    strong = t_sim >= title_thr or (
-        t_sim >= title_thr - 0.10 and dur_close and bpm_close)
-    if not strong:
-        return None
-
-    a_sim = similarity(effective_artist(cand), effective_artist(lib))
-    if a_sim < artist_thr:
-        return None
-
-    # When both durations are known they must agree; unknown length is treated
-    # as 'no evidence' rather than a disqualifier (same as the dedupe model).
-    if cand["length"] and lib["length"] and not dur_close:
-        return None
-
-    return round(t_sim * 0.6 + a_sim * 0.4, 3)
 
 
 def is_quality_upgrade(cand: dict, lib: dict) -> bool:
@@ -124,25 +91,34 @@ def is_quality_upgrade(cand: dict, lib: dict) -> bool:
 
 def find_best_upgrade(cand: dict, library: list[dict],
                       title_thr: float, artist_thr: float):
-    """Return (best_track, confidence, also_available_count) for the highest-
-    quality same-recording file that is a real upgrade on `cand`, or
-    (None, 0.0, 0)."""
-    matches = []
+    """Return (best_track, confidence, also_available_count, match_type) for the
+    best higher-quality file of the same song, or (None, 0.0, 0, None).
+
+    Every quality-upgrade match is classified (exact / looks_same /
+    different_versions) and the candidate is reported once, in the most-confident
+    tier that has a match: a sure same-recording upgrade is preferred over a
+    looks-same one, which is preferred over a higher-quality different version.
+    Within the chosen tier, best = highest quality (rank_key, with a stable id
+    tiebreak so the pick is reproducible); also_available counts the rest of that
+    tier."""
+    tiers: dict[str, list] = {t: [] for t in TIER_ORDER}
     for lib in library:
-        # Cheap pre-filter: skip anything that isn't a genuine quality jump, so
-        # the expensive similarity work only runs on real upgrade candidates.
+        if lib["content_id"] == cand["content_id"]:
+            continue
+        # Cheap pre-filter: only a genuine quality jump is worth the title work.
         if not is_quality_upgrade(cand, lib):
             continue
-        conf = is_same_recording(cand, lib, title_thr, artist_thr)
-        if conf is None:
+        matched, conf, exact_ok = pair_match(cand, lib, title_thr, artist_thr)
+        if not matched:
             continue
-        matches.append((lib, conf))
-    if not matches:
-        return None, 0.0, 0
-    # Best = highest quality (rank_key already includes a stable id tiebreak so
-    # the choice is reproducible). Confidence reported is the chosen match's.
-    best, conf = max(matches, key=lambda mc: rank_key(mc[0]))
-    return best, conf, len(matches) - 1
+        match_type, _ = classify_group([cand, lib], exact_ok)
+        tiers[match_type].append((lib, conf))
+
+    for mt in TIER_ORDER:
+        if tiers[mt]:
+            best, conf = max(tiers[mt], key=lambda mc: rank_key(mc[0]))
+            return best, conf, len(tiers[mt]) - 1, mt
+    return None, 0.0, 0, None
 
 
 def main() -> int:
@@ -177,14 +153,21 @@ def main() -> int:
     library = [track_facts(c) for c in db.get_content()]
 
     # Candidates: this playlist's lossy tracks at/under the bitrate ceiling.
-    playlist_tracks = [track_facts(c) for c in db.get_playlist_contents(target)]
+    # get_playlist_contents does not exclude tombstoned (rb_local_deleted=1)
+    # memberships -- removals pending cloud-sync upload -- so intersect with the
+    # playlist's live song rows to avoid scanning an already-removed track.
+    live_ids = {str(r.ContentID) for r in db.get_playlist_songs()
+                .filter(tables.DjmdSongPlaylist.PlaylistID == pid,
+                        tables.DjmdSongPlaylist.rb_local_deleted == 0).all()}
+    playlist_tracks = [track_facts(c) for c in db.get_playlist_contents(target)
+                       if str(c.ID) in live_ids]
     candidates = [t for t in playlist_tracks
                   if not t["lossless"] and 0 < t["bitrate"] <= args.max_bitrate]
 
     upgrades = []
     no_upgrade = []
     for cand in candidates:
-        best, conf, also = find_best_upgrade(
+        best, conf, also, match_type = find_best_upgrade(
             cand, library, args.title_threshold, args.artist_threshold)
         if best is None:
             no_upgrade.append({
@@ -193,22 +176,38 @@ def main() -> int:
                 "bitrate": cand["bitrate"], "ext": cand["ext"],
             })
             continue
-        memberships = memberships_for(db, tables, index, cand["content_id"], exclude_terms)
+        cur_mem = memberships_for(db, tables, index, cand["content_id"], exclude_terms)
+        up_mem = memberships_for(db, tables, index, best["content_id"], exclude_terms)
+        # Note for tables 2 & 3 -- use the chosen pair's real match strength so a
+        # strong title match isn't mislabeled "fuzzy".
+        _, _, exact_ok = pair_match(cand, best, args.title_threshold, args.artist_threshold)
+        _, note = classify_group([cand, best], exact_ok)
         upgrades.append({
+            "match_type": match_type,
+            "version_note": note,
             "confidence": conf,
             "also_available": also,
             "current": cand,
             "upgrade": best,
-            "playlists": [m for m in memberships if not m["excluded"]],
-            "protected_playlists": [m["playlist_path"] for m in memberships if m["excluded"]],
+            # Where the lossy copy lives (the playlists that could be upgraded)...
+            "playlists": [m for m in cur_mem if not m["excluded"]],
+            "protected_playlists": [m["playlist_path"] for m in cur_mem if m["excluded"]],
+            # ...and where the better file already lives.
+            "upgrade_playlists": [m["playlist_path"] for m in up_mem if not m["excluded"]],
         })
 
-    # Deterministic order: by artist then title (case-insensitive), then id.
-    upgrades.sort(key=lambda u: (u["current"]["artist"].lower(),
+    # Deterministic order, grouped by the three report tables: exact first, then
+    # looks_same, then different_versions; within each by artist/title/id. Both
+    # show_upgrades and build_upgrade_manifest iterate this order, so the group
+    # numbers stay consistent between the report and the apply manifest.
+    tier_rank = {t: i for i, t in enumerate(TIER_ORDER)}
+    upgrades.sort(key=lambda u: (tier_rank.get(u["match_type"], 9),
+                                 u["current"]["artist"].lower(),
                                  u["current"]["title"].lower(),
                                  u["current"]["content_id"]))
     no_upgrade.sort(key=lambda u: (u["artist"].lower(), u["title"].lower(), u["content_id"]))
 
+    by_tier = {t: sum(1 for u in upgrades if u["match_type"] == t) for t in TIER_ORDER}
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "playlist": {"id": pid, "name": target.Name, "path": target_path},
@@ -220,6 +219,9 @@ def main() -> int:
             "playlist_track_count": len(playlist_tracks),
             "candidates_scanned": len(candidates),
             "upgrades_found": len(upgrades),
+            "exact": by_tier["exact"],
+            "looks_same": by_tier["looks_same"],
+            "different_versions": by_tier["different_versions"],
             "no_upgrade": len(no_upgrade),
         },
         "upgrades": upgrades,
@@ -234,7 +236,9 @@ def main() -> int:
     print(f"  Playlist: {target_path} ({s['playlist_track_count']} tracks)")
     print(f"  Library scanned: {s['library_size']} tracks")
     print(f"  Lossy candidates (<= {args.max_bitrate}k): {s['candidates_scanned']}")
-    print(f"  Upgrades found: {s['upgrades_found']}")
+    print(f"  Upgrades found: {s['upgrades_found']} "
+          f"({s['exact']} exact, {s['looks_same']} look the same, "
+          f"{s['different_versions']} different versions)")
     print(f"  No better file: {s['no_upgrade']}")
     return 0
 

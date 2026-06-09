@@ -8,10 +8,13 @@ touching the matcher logic:
     python3 test_matcher.py
 
 Exits 0 when every check passes, 1 (with a list of failures) otherwise. The
-cases mirror real misses found in the user's library, split into:
+cases mirror real misses found in the user's library, split into the three group
+kinds the reviewer sees:
   * true duplicates that must collapse (exact),
-  * different versions in one playlist that must be *called out* (version_variant,
-    grouped for review but never auto-collapsed).
+  * copies that look like the same recording -- matching length + BPM, no
+    conflicting version tags (looks_same; reviewed, never auto-collapsed),
+  * genuinely different versions -- conflicting tags or divergent length
+    (different_versions; reviewed one at a time).
 """
 from __future__ import annotations
 
@@ -117,13 +120,16 @@ def test_true_dupes_exact() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Different versions in one playlist -> version_variant (called out)
+# Conflicting version tags or divergent length -> different_versions (called out)
 # ---------------------------------------------------------------------------
 
-def test_versions_called_out() -> None:
+def test_different_versions_called_out() -> None:
     cases = [
+        # Two different, non-empty hard tags -> different versions even at a close
+        # length.
         ("D-Train", "You're The One For Me (Remix)", 360, 117.0, "",
          "You're The One For Me (Labor Of Love Mix)", 380, 117.0, ""),
+        # Plain vs a named mix, with a big length gap.
         ("Change", "A Lover's Holiday", 237, 120.0, "",
          "A Lover's Holiday (Jim Burgess Mix)", 384, 120.0, ""),
         ("First Choice", 'Doctor Love (Tom Moulton 12" Mix)', 400, 120.0, "",
@@ -139,8 +145,33 @@ def test_versions_called_out() -> None:
         c = mk(art, t2, l2, b2, r2)
         matched, typ = verdict(a, c)
         check(matched, f"{art} '{t1}' vs '{t2}' did not cluster (not called out)")
-        check(typ == "version_variant",
-              f"{art} '{t1}' vs '{t2}' classified {typ}, expected version_variant")
+        check(typ == "different_versions",
+              f"{art} '{t1}' vs '{t2}' classified {typ}, expected different_versions")
+
+
+# ---------------------------------------------------------------------------
+# Same recording, tagged/encoded differently -> looks_same (reviewed, not exact)
+# ---------------------------------------------------------------------------
+
+def test_looks_same_called_out() -> None:
+    cases = [
+        # One hard tag vs plain, identical length + BPM -> the same take.
+        ("Chic", 'Chic Cheer (12" Mix)', 283, 113.0, "",
+         "Chic Cheer (2006 Remaster)", 283, 113.0, ""),
+        # Remaster tag is soft: same recording, better fidelity.
+        ("Patrice Rushen", "Forget Me Nots (Remastered)", 284, 113.8, "",
+         "Forget Me Nots", 275, 114.7, ""),
+        # Neutral tag drift only, tiny length wobble -> same.
+        ("Grace Jones", "Pull Up To The Bumper (Original Mix)", 273, 109.3, "",
+         "Pull Up to the Bumper", 282, 109.1, ""),
+    ]
+    for art, t1, l1, b1, r1, t2, l2, b2, r2 in cases:
+        a = mk(art, t1, l1, b1, r1)
+        c = mk(art, t2, l2, b2, r2)
+        matched, typ = verdict(a, c)
+        check(matched, f"{art} '{t1}' vs '{t2}' did not cluster")
+        check(typ == "looks_same",
+              f"{art} '{t1}' vs '{t2}' classified {typ}, expected looks_same")
 
 
 # ---------------------------------------------------------------------------
@@ -163,8 +194,9 @@ def test_rescue_safety() -> None:
     check(bool(groups), "loose-band pair should form a group")
     if groups:
         typ, _ = classify_group(groups[0]["members"], groups[0]["exact_eligible"])
-        check(typ == "version_variant",
-              f"loose-rescued group must be variant, got {typ}")
+        # Identical length + BPM, no conflicting tags -> looks_same (never exact).
+        check(typ == "looks_same",
+              f"loose-rescued group must be looks_same, got {typ}")
 
     # Unrelated songs: dissimilar title, far length/BPM -> no match, no rescue.
     na = mk("Artist X", "Completely Different Song", 200, 100.0)
@@ -176,7 +208,8 @@ def test_rescue_safety() -> None:
 def main() -> int:
     test_split_title()
     test_true_dupes_exact()
-    test_versions_called_out()
+    test_different_versions_called_out()
+    test_looks_same_called_out()
     test_rescue_safety()
 
     if _failures:

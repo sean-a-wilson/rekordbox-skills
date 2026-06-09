@@ -79,14 +79,19 @@ def main() -> int:
                         u["current"]["content_id"], exclude_terms)
         jump = (f"{loser['bitrate']}k {loser['ext'] or '?'} -> "
                 f"{winner['bitrate']}k {winner['ext'] or '?'}")
+        # Carry the report's three-way classification through so the apply step
+        # can decide the exact table in bulk and number groups the same way the
+        # report's tables do. Exact upgrades are confident same-recording swaps;
+        # looks_same / different_versions are always reviewed one at a time.
         groups.append({
-            "match_type": "upgrade",
-            "version_note": jump,
+            "match_type": u.get("match_type", "exact"),
+            "version_note": u.get("version_note") or jump,
+            "quality_jump": jump,
             "marker_label": markers_label(frozenset(loser["markers"])),
             "confidence": u.get("confidence"),
             "winner_content_id": winner["content_id"],
             "decision": "pending",
-            "scope": "target_only",
+            "scope": "unset",
             "actions": [],
             "members": [winner, loser],
         })
@@ -104,11 +109,16 @@ def main() -> int:
         json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
 
     pl = manifest["playlist"]
+    n_exact = sum(1 for g in groups if g["match_type"] == "exact")
+    n_look = sum(1 for g in groups if g["match_type"] == "looks_same")
+    n_diff = sum(1 for g in groups if g["match_type"] == "different_versions")
     print(f"Wrote {args.out}")
     print(f"  Playlist: {pl.get('path')} ({pl.get('id')})")
-    print(f"  Upgrade groups (all pending): {len(groups)}")
+    print(f"  Upgrade groups (all pending): {len(groups)} "
+          f"({n_exact} exact, {n_look} look the same, {n_diff} different versions)")
     if groups:
-        print("  Decide each with decide_upgrade.py, then apply_changes.py.")
+        print("  Table 1 (exact) decides in bulk: decide_upgrade.py --all-exact "
+              "--apply --scope ... (or --skip-all). Tables 2 & 3: --group N.")
     return 0
 
 

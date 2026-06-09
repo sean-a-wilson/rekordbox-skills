@@ -28,7 +28,8 @@ DEFAULT_ARTIST_THRESHOLD = 0.80
 
 # How close two durations must be to count as the same recording: the larger of
 # 3 seconds or 2% of the longer track. Used both to corroborate a match and to
-# decide whether a group is an "exact" dupe or a "version_variant".
+# decide whether a group is an "exact" dupe or needs review (looks_same /
+# different_versions).
 def length_tolerance(a: int, b: int) -> int:
     return max(3, round(0.02 * max(a, b)))
 

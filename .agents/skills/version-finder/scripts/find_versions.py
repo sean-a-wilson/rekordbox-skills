@@ -164,7 +164,8 @@ def memberships_for(db, tables, index, content_id, exclude_terms):
     """Every playlist a given content id belongs to, as full folder paths, with
     protected (Backup) playlists flagged so the report can footnote them."""
     rows = (db.get_playlist_songs()
-            .filter(tables.DjmdSongPlaylist.ContentID == str(content_id))
+            .filter(tables.DjmdSongPlaylist.ContentID == str(content_id),
+                    tables.DjmdSongPlaylist.rb_local_deleted == 0)
             .all())
     out = []
     for r in rows:

@@ -498,7 +498,8 @@ def playlist_memberships(db, tables, index, content_id, exclude_terms):
     in. Mirrors the dedupe skill's detector so the two produce identical apply
     manifests."""
     rows = (db.get_playlist_songs()
-            .filter(tables.DjmdSongPlaylist.ContentID == str(content_id))
+            .filter(tables.DjmdSongPlaylist.ContentID == str(content_id),
+                    tables.DjmdSongPlaylist.rb_local_deleted == 0)
             .all())
     out = []
     for r in rows:

@@ -28,7 +28,8 @@ DEFAULT_ARTIST_THRESHOLD = 0.80
 
 # How close two durations must be to count as the same recording: the larger of
 # 3 seconds or 2% of the longer track. Used both to corroborate a match and to
-# decide whether a group is an "exact" dupe or a "version_variant".
+# decide whether a group is an "exact" dupe or needs review (looks_same /
+# different_versions).
 def length_tolerance(a: int, b: int) -> int:
     return max(3, round(0.02 * max(a, b)))
 
@@ -276,6 +277,95 @@ def markers_label(markers: frozenset) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Pairing + 3-way classification (shared shape with playlist-dedupe)
+# ---------------------------------------------------------------------------
+# upgrade-finder pairs each lossy playlist track with a higher-quality library
+# file, then classifies the pair the same three ways the dedupe skill classifies
+# a duplicate group, so the report can show three tables:
+#   * exact              -- same recording for sure (identical tags, matching
+#                           length, strong title): a confident upgrade.
+#   * looks_same         -- no conflicting tags and length+BPM line up tightly:
+#                           almost certainly the same take (remaster, tag drift).
+#   * different_versions -- conflicting version tags or notably different
+#                           length/BPM: a higher-quality DIFFERENT version.
+LOOKS_SAME_LEN_RATIO = 0.08   # max (max-min)/max duration spread to still look same
+LOOKS_SAME_BPM_TOL = 1.5      # max BPM spread to still look same
+
+
+def pair_match(a: dict, b: dict, title_thr: float, artist_thr: float):
+    """Whether two tracks are the same-ish recording (same base title + artist),
+    returning (matched, confidence, exact_eligible). Mirrors the dedupe matcher:
+    a strong title tier, plus a loose duration+BPM rescue that surfaces messy
+    titles for review (exact_eligible False) but never counts as a sure match."""
+    t_sim = similarity(a["base_title"], b["base_title"])
+    dur_close = lengths_close(a["length"], b["length"])
+    bpm_close = bpms_close(a["bpm"], b["bpm"])
+    strong = t_sim >= title_thr or (
+        t_sim >= title_thr - 0.10 and dur_close and bpm_close)
+    loose = t_sim >= title_thr - 0.20 and (
+        lengths_very_close(a["length"], b["length"])
+        and bpms_very_close(a["bpm"], b["bpm"]))
+    if not (strong or loose):
+        return False, 0.0, False
+    a_sim = similarity(effective_artist(a), effective_artist(b))
+    if a_sim < artist_thr:
+        return False, 0.0, False
+    return True, round(t_sim * 0.6 + a_sim * 0.4, 3), strong
+
+
+def _hard_marker_sets(members: list[dict]) -> list[frozenset]:
+    """Each member's distinguishing markers with SOFT (remaster) tags removed --
+    a remaster is the same recording, not a different version."""
+    return [frozenset(mk for mk in m["markers"] if "remaster" not in mk)
+            for m in members]
+
+
+def _looks_same_recording(members: list[dict]) -> bool:
+    """True when the copies line up tightly enough on duration and BPM to most
+    likely be the SAME recording despite differing tags."""
+    lengths = [m["length"] for m in members if m["length"]]
+    bpms = [m["bpm"] for m in members if m["bpm"]]
+    if len(bpms) >= 2 and (max(bpms) - min(bpms)) > LOOKS_SAME_BPM_TOL:
+        return False
+    if len(lengths) >= 2:
+        hi = max(lengths)
+        return hi > 0 and (hi - min(lengths)) / hi <= LOOKS_SAME_LEN_RATIO
+    return len(bpms) >= 2
+
+
+def classify_group(members: list[dict], exact_eligible: bool = True) -> tuple[str, str]:
+    """Classify a group of copies as exact / looks_same / different_versions, with
+    a short human note. Identical to the playlist-dedupe classifier so both skills
+    bucket the same way."""
+    marker_sets = {frozenset(m["markers"]) for m in members}
+    lengths = [m["length"] for m in members if m["length"]]
+    length_spread_ok = True
+    if len(lengths) >= 2:
+        length_spread_ok = (max(lengths) - min(lengths)) <= length_tolerance(
+            max(lengths), min(lengths))
+
+    if len(marker_sets) == 1 and length_spread_ok and exact_eligible:
+        return "exact", ""
+
+    notes = []
+    if len(marker_sets) > 1:
+        notes.append(" vs ".join(sorted({markers_label(s) for s in marker_sets})))
+    if not length_spread_ok and len(lengths) >= 2:
+        def mmss(s):
+            return f"{s // 60}:{s % 60:02d}"
+        notes.append(f"{mmss(max(lengths))} vs {mmss(min(lengths))}")
+    if not exact_eligible:
+        notes.append("fuzzy title match -- review")
+
+    distinct_hard = {s for s in _hard_marker_sets(members) if s}
+    if len(distinct_hard) >= 2:
+        return "different_versions", "; ".join(notes)
+    if _looks_same_recording(members):
+        return "looks_same", "; ".join(notes)
+    return "different_versions", "; ".join(notes)
+
+
+# ---------------------------------------------------------------------------
 # Track facts
 # ---------------------------------------------------------------------------
 
@@ -498,7 +588,8 @@ def playlist_memberships(db, tables, index, content_id, exclude_terms):
     in. Mirrors the dedupe skill's detector so the two produce identical apply
     manifests."""
     rows = (db.get_playlist_songs()
-            .filter(tables.DjmdSongPlaylist.ContentID == str(content_id))
+            .filter(tables.DjmdSongPlaylist.ContentID == str(content_id),
+                    tables.DjmdSongPlaylist.rb_local_deleted == 0)
             .all())
     out = []
     for r in rows:
