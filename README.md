@@ -57,5 +57,5 @@ Each skill's own README explains what it does and how to use it.
 4. Ask Claude to do the thing — e.g. *"dedupe my 'Disco' playlist."*
 
 ## Contributors
-Sean Wilson - Moon Trip
-Instagram: https://www.instagram.com/moontripdisco
+Sean Wilson aka Moon Trip | Disco House Producer & DJ | 
+[@moontripdisco](https://www.instagram.com/moontripdisco) | [Spotify](https://open.spotify.com/artist/2LXK0OCfgTMrAcKaauWxag?si=stIynY2uTKanfDoK2BY7Jw) | [SoundCloud](https://soundcloud.com/moontripdisco)
