@@ -3,3 +3,6 @@ __pycache__/
 
 # Machine-local Claude settings (personal paths, permissions)
 .claude/settings.local.json
+
+# Private project planning (gitignored — local only)
+.new-features/

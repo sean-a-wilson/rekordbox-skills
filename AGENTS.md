@@ -61,6 +61,10 @@ Follow the same shape as the existing skills so they stay consistent and discove
 4. **Verify**: `readlink .claude/skills/<name>` resolves, and the skill loads when
    you launch Claude in the repo.
 
+## Private project planning
+
+When the user says **"Create a project [name]"** (or "start a project for X", "new project: X", "plan out X"), read `.new-features/AGENTS.md` and follow the instructions there to create a project plan file. The `.new-features/` folder is gitignored — plan files are local only and deleted once the skill ships.
+
 ## Working in this repo
 
 - **Launch**: start the agent in this repo so the `.claude/skills/` symlinks load
