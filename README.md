@@ -59,3 +59,6 @@ Each skill's own README explains what it does and how to use it.
 ## Contributors
 Sean Wilson aka Moon Trip | Disco House Producer & DJ | 
 [@moontripdisco](https://www.instagram.com/moontripdisco) | [Spotify](https://open.spotify.com/artist/2LXK0OCfgTMrAcKaauWxag?si=stIynY2uTKanfDoK2BY7Jw) | [SoundCloud](https://soundcloud.com/moontripdisco)
+
+## Help Using
+If you are new to anything related to code, Claude Code / AI, GitHub or tech like this, please send me a dm on instagram (@moontripdisco) or an email: (moontripdisco@gmail.com). I would love to help you!
