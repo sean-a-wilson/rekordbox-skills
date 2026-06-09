@@ -7,6 +7,8 @@ it, and ask in plain language.
 > macOS / Linux only. Setup relies on symlinks committed to the repo, which don't
 > work on Windows.
 
+**Disclaimer:** I do not support the use of AI in music making, DJing or any form of the Arts. I do think AI can be used to automate the mundane.
+
 ## Available skills
 
 - **[playlist-dedupe](.agents/skills/playlist-dedupe/)** — find and prune
