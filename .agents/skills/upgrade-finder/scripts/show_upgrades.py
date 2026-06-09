@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """Render an upgrade report from find_upgrades.py for review (read-only).
 
-The default view is the table the user asked for -- one row per playlist track
-that has a higher-quality version elsewhere in the library:
+The report groups every lossy playlist track that has a higher-quality file in
+your library into THREE tables, by how sure the better file is the same song:
 
-    # | Song (in playlist) | Current | Upgrade found | Playlists that could be upgraded
+  1. Exact upgrades       -- same recording for sure; apply the whole table at once.
+  2. Looks like the same  -- almost certainly the same take; review one at a time.
+  3. Different versions   -- a higher-quality DIFFERENT version; review one at a time.
 
-`--no-upgrade` additionally lists the lossy tracks with no better file found
-(the "already the best copy you own" set).
+Each table lists BOTH files in the pair (the better file kept, the lossy copy it
+would replace) with the playlists each lives in, so the cross-playlist reach of a
+swap is always visible.
+
+`--no-upgrade` additionally lists the lossy tracks with no better file found.
 
 Usage:
-    python3 show_upgrades.py upgrades.json                # the upgrade table
+    python3 show_upgrades.py upgrades.json                # the three tables
     python3 show_upgrades.py upgrades.json --no-upgrade   # + the no-better list
     python3 show_upgrades.py upgrades.json --format tsv   # tab-separated
 """
@@ -20,6 +25,15 @@ import argparse
 import json
 from pathlib import Path
 
+TYPE_LABELS = {
+    "exact": "Exact upgrades",
+    "looks_same": "Looks like the same",
+    "different_versions": "Different versions",
+}
+TYPE_ORDER = ["exact", "looks_same", "different_versions"]
+HEADERS = ["#", "Keep", "Artist - Title", "Quality (fmt · time · bpm)",
+           "Lives in (non-backup playlists)", "Note"]
+
 
 def _mmss(seconds: int) -> str:
     if not seconds:
@@ -27,79 +41,120 @@ def _mmss(seconds: int) -> str:
     return f"{seconds // 60}:{seconds % 60:02d}"
 
 
+def _bpm(b) -> str:
+    return f"{b:.1f}" if b else "?"
+
+
 def _quality(t: dict) -> str:
-    """e.g. '320k mp3' or '1411k wav'."""
-    ext = t.get("ext") or "?"
-    return f"{t.get('bitrate', 0)}k {ext}"
+    return (f"{t.get('bitrate', 0)}k {t.get('ext') or '?'} · "
+            f"{_mmss(t.get('length', 0))} · {_bpm(t.get('bpm', 0))}")
 
 
 def _song(t: dict) -> str:
-    return f"{t.get('artist', '')} - {t.get('title', '')} ({_mmss(t.get('length', 0))})"
+    return f"{t.get('artist', '')} - {t.get('title', '')}"
 
 
-def _playlists_cell(u: dict) -> str:
+def upgrade_type(u: dict) -> str:
+    mt = u.get("match_type", "exact")
+    return mt if mt in TYPE_LABELS else "exact"
+
+
+def _current_lives(u: dict) -> str:
     paths = [m["playlist_path"] for m in u.get("playlists", [])]
-    cell = "; ".join(paths) if paths else "(none)"
+    cell = (f"({len(paths)}) " + "; ".join(paths)) if paths else "(no non-backup playlist)"
     n_prot = len(u.get("protected_playlists", []))
     if n_prot:
         cell += f"  [+{n_prot} protected]"
     return cell
 
 
-def _upgrade_cell(u: dict) -> str:
-    cell = _quality(u["upgrade"])
+def _upgrade_lives(u: dict) -> str:
+    paths = u.get("upgrade_playlists", [])
+    return (f"({len(paths)}) " + "; ".join(paths)) if paths else "(library only)"
+
+
+def _jump(u: dict) -> str:
+    cur, up = u["current"], u["upgrade"]
+    note = (f"{cur.get('bitrate', 0)}k {cur.get('ext') or '?'} -> "
+            f"{up.get('bitrate', 0)}k {up.get('ext') or '?'}")
     if u.get("also_available"):
-        cell += f"  (+{u['also_available']} more)"
-    return cell
+        note += f"  (+{u['also_available']} more)"
+    return note
 
 
-def rows(report: dict):
+def _type_rows(report: dict, mt: str):
+    """Two rows per upgrade group of kind `mt`: the better file (KEEP) then the
+    lossy copy it would replace. The # appears once per group."""
     out = []
     for i, u in enumerate(report.get("upgrades", []), 1):
-        out.append((
-            str(i),
-            _song(u["current"]),
-            _quality(u["current"]),
-            _upgrade_cell(u),
-            _playlists_cell(u),
-        ))
+        if upgrade_type(u) != mt:
+            continue
+        out.append((str(i), "KEEP", _song(u["upgrade"]), _quality(u["upgrade"]),
+                    _upgrade_lives(u), _jump(u)))
+        out.append(("", "", _song(u["current"]), _quality(u["current"]),
+                    _current_lives(u), u.get("version_note", "") or ""))
     return out
+
+
+def _print_table(rows_data, fmt: str) -> None:
+    if fmt == "tsv":
+        print("\t".join(HEADERS))
+        for r in rows_data:
+            print("\t".join(r))
+        return
+    print("| " + " | ".join(HEADERS) + " |")
+    print("|" + "|".join(["---"] * len(HEADERS)) + "|")
+    for r in rows_data:
+        cells = [c.replace("|", "\\|") for c in r]
+        print("| " + " | ".join(cells) + " |")
 
 
 def print_report(report: dict, fmt: str, show_no_upgrade: bool) -> None:
     pl = report.get("playlist", {})
     s = report.get("summary", {})
-    data = rows(report)
-    headers = ["#", "Song (in playlist)", "Current", "Upgrade found",
-               "Playlists that could be upgraded"]
+    counts = {t: sum(1 for u in report.get("upgrades", []) if upgrade_type(u) == t)
+              for t in TYPE_ORDER}
 
     print(f"Playlist: {pl.get('path')}")
     print(
         f"{s.get('upgrades_found', 0)} of {s.get('candidates_scanned', 0)} lossy "
         f"tracks (<= {report.get('thresholds', {}).get('max_bitrate', 320)}k) have a "
-        f"higher-quality version in your library "
-        f"(library {s.get('library_size', 0)} tracks)."
+        f"higher-quality file in your library "
+        f"({counts['exact']} exact, {counts['looks_same']} look the same, "
+        f"{counts['different_versions']} different versions; "
+        f"library {s.get('library_size', 0)} tracks)."
     )
-    print()
 
-    if fmt == "tsv":
-        print("\t".join(headers))
-        for r in data:
-            print("\t".join(r))
-    else:
-        print("| " + " | ".join(headers) + " |")
-        print("|" + "|".join(["---"] * len(headers)) + "|")
-        for r in data:
-            cells = [c.replace("|", "\\|") for c in r]
-            print("| " + " | ".join(cells) + " |")
+    blurbs = {
+        "exact": "Same recording for sure -- a confident upgrade. Apply the whole "
+                 "table at once: swap all, or skip all.",
+        "looks_same": "Almost certainly the same take (matching length + BPM, just "
+                      "tagged/encoded differently). Review one at a time.",
+        "different_versions": "A higher-quality DIFFERENT version (different "
+                              "length/BPM or distinct tags). Review one at a time; "
+                              "skipping is common here.",
+    }
 
-    print(f"\nShown: {len(data)} of {len(data)} upgrade rows (complete -- nothing truncated).")
+    for ti, mt in enumerate(TYPE_ORDER, 1):
+        data = _type_rows(report, mt)
+        print(f"\n### Table {ti} - {TYPE_LABELS[mt]} ({counts[mt]} upgrade(s))")
+        print(blurbs[mt])
+        print()
+        if not data:
+            print("_none_")
+            continue
+        _print_table(data, fmt)
+
+    print(f"\nShown: {s.get('upgrades_found', 0)} of {s.get('upgrades_found', 0)} "
+          f"upgrades (complete -- nothing truncated). Each pair: the kept better "
+          f"file (KEEP) and the lossy copy it would replace.")
 
     if show_no_upgrade:
         nu = report.get("no_upgrade_tracks", [])
         print(f"\nNo better file found ({len(nu)} -- already the best copy you own):")
         for t in nu:
-            print(f"  - {t.get('artist', '')} - {t.get('title', '')} [{_quality(t)}]")
+            print(f"  - {t.get('artist', '')} - {t.get('title', '')} "
+                  f"[{t.get('bitrate', 0)}k {t.get('ext') or '?'}]")
 
 
 def main() -> int:

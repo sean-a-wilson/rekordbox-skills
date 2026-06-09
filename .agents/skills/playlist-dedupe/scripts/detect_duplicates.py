@@ -5,8 +5,9 @@ This script is read-only -- it never touches the database. It groups the
 playlist's tracks by version-aware artist+title similarity (corroborated by
 track duration / BPM), picks a *recommended* winner per group (lossless wins,
 then higher bitrate, then larger file, then a stable tiebreak), classifies each
-group as an exact duplicate or a version variant, and seeds a per-group
-decision the user later confirms one group at a time (see decide.py).
+group three ways (exact / looks_same / different_versions), and seeds a per-group
+decision the user later confirms (exact in bulk, the other two one at a time;
+see decide.py).
 
 Read-only and deterministic: same library + same thresholds => same manifest.
 
@@ -24,7 +25,6 @@ from datetime import datetime, timezone
 from rb_common import (
     DEFAULT_ARTIST_THRESHOLD,
     DEFAULT_TITLE_THRESHOLD,
-    build_group_actions,
     build_playlist_index,
     bpms_close,
     bpms_very_close,
@@ -49,8 +49,8 @@ def _pair_matches(a: dict, b: dict, title_thr: float, artist_thr: float):
 
     exact_ok is False when the pair was only held together by the loose Tier C
     rescue (weak title, near-identical duration+BPM). Such a pair may be grouped
-    for review but must never be auto-collapsed -- the caller downgrades any
-    group it taints to a version_variant so the user rules on it."""
+    for review but must never be auto-collapsed -- the caller routes any group it
+    taints to a reviewed table (looks_same / different_versions), not exact."""
     t_sim = similarity(a["base_title"], b["base_title"])
     dur_close = lengths_close(a["length"], b["length"])
     bpm_close = bpms_close(a["bpm"], b["bpm"])
@@ -122,7 +122,7 @@ def cluster_duplicates(tracks, title_thr, artist_thr):
         confidence = min(confs) if confs else 0.0
         # A group is exact-eligible only if every matching pair within it cleared
         # the strong title bar; a single loose (Tier C) link makes the whole
-        # group review-only (a version_variant), never an auto-collapse.
+        # group review-only (looks_same / different_versions), never auto-collapse.
         exacts = [e for (a, b), e in pair_exact.items()
                   if a in member_set and b in member_set]
         exact_eligible = all(exacts) if exacts else True
@@ -134,12 +134,64 @@ def cluster_duplicates(tracks, title_thr, artist_thr):
     return result
 
 
+# How a non-exact group is split into "looks the same recording" vs "different
+# versions". Two signals decide it:
+#   1. HARD version tags. A "remaster"/"remastered" tag is the same recording in
+#      better fidelity, so it is treated as SOFT (ignored here). Any other
+#      distinguishing tag (Remix, Dub, a named/remixer mix, 12"/7", ...) is HARD.
+#      If two copies carry DIFFERENT, non-empty hard-tag sets they are different
+#      takes (e.g. "(Remix)" vs "(Labor Of Love Mix)") -- regardless of length.
+#   2. Duration + BPM. Absent a hard-tag conflict, copies whose durations line up
+#      closely AND whose BPMs agree are almost certainly the same recording (just
+#      tagged/encoded differently, or a loose-rescued messy title); a real
+#      alternate take almost always changes the length.
+LOOKS_SAME_LEN_RATIO = 0.08   # max (max-min)/max duration spread to still look same
+LOOKS_SAME_BPM_TOL = 1.5      # max BPM spread to still look same
+
+
+def _hard_marker_sets(members: list[dict]) -> list[frozenset]:
+    """Each member's distinguishing markers with SOFT (remaster) tags removed --
+    a remaster is the same recording, not a different version."""
+    return [frozenset(mk for mk in m["markers"] if "remaster" not in mk)
+            for m in members]
+
+
+def _looks_same_recording(members: list[dict]) -> bool:
+    """True when the group's copies line up tightly enough on duration and BPM to
+    most likely be the SAME recording despite differing tags. Used only to split
+    the non-exact groups; never promotes anything to an auto-collapse."""
+    lengths = [m["length"] for m in members if m["length"]]
+    bpms = [m["bpm"] for m in members if m["bpm"]]
+
+    bpm_ok = True
+    if len(bpms) >= 2:
+        bpm_ok = (max(bpms) - min(bpms)) <= LOOKS_SAME_BPM_TOL
+    if not bpm_ok:
+        return False
+
+    if len(lengths) >= 2:
+        hi = max(lengths)
+        return hi > 0 and (hi - min(lengths)) / hi <= LOOKS_SAME_LEN_RATIO
+    # No length evidence: rely on BPM essentially matching (already checked).
+    return len(bpms) >= 2
+
+
 def classify_group(members: list[dict], exact_eligible: bool = True) -> tuple[str, str]:
-    """Decide whether a group is an 'exact' duplicate or a 'version_variant',
-    and produce a short human note explaining why. A group is exact only when
-    every member shares the same distinguishing-marker set AND their durations
-    all agree within tolerance AND it wasn't held together by a loose (fuzzy
-    title) link; otherwise it is a variant the user must rule on."""
+    """Classify a group as one of three kinds and produce a short human note:
+
+      * 'exact'              -- same recording for sure: every member shares the
+                                same distinguishing-marker set, durations all
+                                agree within tolerance, and it wasn't held
+                                together by a loose (fuzzy title) link.
+      * 'looks_same'         -- not provably identical, but no conflicting version
+                                tags and durations + BPM line up tightly, so it's
+                                almost certainly the same take (remaster, neutral
+                                tag drift, quality upgrade, or a loose-rescued
+                                messy title). Reviewed, not auto-collapsed.
+      * 'different_versions' -- genuinely different takes: conflicting version
+                                tags, or notably different length/BPM. Reviewed
+                                one at a time.
+    """
     marker_sets = {frozenset(m["markers"]) for m in members}
     lengths = [m["length"] for m in members if m["length"]]
 
@@ -147,6 +199,9 @@ def classify_group(members: list[dict], exact_eligible: bool = True) -> tuple[st
     if len(lengths) >= 2:
         length_spread_ok = (max(lengths) - min(lengths)) <= length_tolerance(
             max(lengths), min(lengths))
+
+    if len(marker_sets) == 1 and length_spread_ok and exact_eligible:
+        return "exact", ""
 
     notes = []
     if len(marker_sets) > 1:
@@ -159,9 +214,15 @@ def classify_group(members: list[dict], exact_eligible: bool = True) -> tuple[st
     if not exact_eligible:
         notes.append("fuzzy title match -- review")
 
-    if len(marker_sets) == 1 and length_spread_ok and exact_eligible:
-        return "exact", ""
-    return "version_variant", "; ".join(notes)
+    # Two or more distinct, non-empty HARD-tag sets => clearly different versions,
+    # no matter how close the durations are.
+    distinct_hard = {s for s in _hard_marker_sets(members) if s}
+    if len(distinct_hard) >= 2:
+        return "different_versions", "; ".join(notes)
+
+    if _looks_same_recording(members):
+        return "looks_same", "; ".join(notes)
+    return "different_versions", "; ".join(notes)
 
 
 def is_excluded(path: str, exclude_terms) -> bool:
@@ -254,11 +315,13 @@ def main() -> int:
         winner_pids = {mm["playlist_id"] for mm in winner["memberships"]}
         losers = [m for m in members if m["content_id"] != winner["content_id"]]
 
-        # Default decision: exact dupes collapse (this-playlist-only); version
-        # variants are pending until the user rules on them.
+        # Exact dupes pre-decide the keeper (quality rule), but the SCOPE is never
+        # assumed -- it starts "unset" so the operator must explicitly choose
+        # target_only vs everywhere for every removal (apply refuses while any
+        # scope is unset). Version variants stay pending until ruled on too.
         decision = "collapse" if match_type == "exact" else "pending"
-        scope = "target_only"
-        actions = build_group_actions(winner, losers, winner_pids, pid, scope)
+        scope = "unset"
+        actions = []  # built by decide.py once a scope is explicitly chosen
 
         manifest_groups.append({
             "key": normalize(winner["artist"]) + " :: " + winner["base_title"],
@@ -273,16 +336,22 @@ def main() -> int:
             "actions": actions,
         })
 
-    # Stable order: pending variants first (they need attention), then by
-    # confidence (riskiest fuzzy matches next), then key.
+    # Stable order grouped by the three tables the reviewer will see: exact dupes
+    # first (batch-decided), then looks-same, then different versions; within each
+    # by confidence then key. show_manifest renders one table per type but keeps
+    # this single global numbering so decide.py --group N stays consistent.
+    type_order = {"exact": 0, "looks_same": 1, "different_versions": 2}
     manifest_groups.sort(key=lambda mg: (
-        0 if mg["decision"] == "pending" else 1, mg["confidence"], mg["key"]))
+        type_order.get(mg["match_type"], 9), -mg["confidence"], mg["key"]))
 
     losing_tracks = sum(len(mg["members"]) - 1 for mg in manifest_groups)
     removes = sum(1 for mg in manifest_groups for a in mg["actions"] if a["type"] == "remove")
     adds = sum(1 for mg in manifest_groups for a in mg["actions"] if a["type"] == "add")
     touched = {a["playlist_id"] for mg in manifest_groups for a in mg["actions"]}
-    variants = sum(1 for mg in manifest_groups if mg["match_type"] == "version_variant")
+    exact_groups = sum(1 for mg in manifest_groups if mg["match_type"] == "exact")
+    looks_same = sum(1 for mg in manifest_groups if mg["match_type"] == "looks_same")
+    different_versions = sum(1 for mg in manifest_groups
+                            if mg["match_type"] == "different_versions")
 
     protected = sorted({
         m["playlist_path"]
@@ -298,7 +367,9 @@ def main() -> int:
         "protected_playlists_skipped": protected,
         "summary": {
             "duplicate_groups": len(manifest_groups),
-            "version_variant_groups": variants,
+            "exact_groups": exact_groups,
+            "looks_same_groups": looks_same,
+            "different_version_groups": different_versions,
             "pending_groups": sum(1 for mg in manifest_groups if mg["decision"] == "pending"),
             "losing_tracks": losing_tracks,
             "membership_removals": removes,
@@ -317,17 +388,16 @@ def main() -> int:
     print(f"Wrote {args.out}")
     print(f"  Playlist: {manifest['playlist']['path']} ({s['playlist_track_count']} tracks)")
     print(f"  Duplicate groups: {s['duplicate_groups']} "
-          f"({s['version_variant_groups']} version variants, {s['pending_groups']} pending)")
+          f"({s['exact_groups']} exact, {s['looks_same_groups']} look the same, "
+          f"{s['different_version_groups']} different versions)")
     print(f"  Distinct loser tracks: {s['losing_tracks']}")
-    print(f"  Default membership removals: {s['membership_removals']}")
-    print(f"  Default winner adds (cross-playlist): {s['winner_adds']}")
-    print(f"  Playlists touched (by current decisions): {s['playlists_touched']}")
     if exclude_terms:
         print(f"  Protected playlists skipped ({'/'.join(exclude_terms)}): "
               f"{s['protected_playlists_skipped']}")
-    if s["pending_groups"]:
-        print(f"\n  NOTE: {s['pending_groups']} version-variant group(s) are PENDING "
-              f"and must be decided (decide.py) before apply will run.")
+    print(f"\n  NOTE: scope is UNSET for every group -- nothing is removed until you")
+    print(f"  explicitly decide. Table 1 (exact) can be replaced in bulk")
+    print(f"  (decide.py --all-exact --scope ...); tables 2 & 3 are reviewed one")
+    print(f"  at a time (keeper + scope). Apply refuses until all are set.")
     return 0
 
 

@@ -131,6 +131,18 @@ def collect_actions(manifest: dict):
             + "\n".join(lines)
         )
 
+    unset_scope = [g for g in groups
+                   if g.get("decision") == "collapse"
+                   and g.get("scope") not in ("target_only", "everywhere")]
+    if unset_scope:
+        lines = [f"  - {g.get('members', [{}])[0].get('artist','?')} - "
+                 f"{g.get('members', [{}])[0].get('title','?')}" for g in unset_scope]
+        raise SystemExit(
+            f"{len(unset_scope)} approved upgrade(s) have NO scope chosen. Scope is "
+            f"never assumed -- re-run decide_upgrade.py --apply with --scope everywhere "
+            f"or --scope target-only:\n" + "\n".join(lines)
+        )
+
     adds, removes = [], []
     for g in groups:
         if g.get("decision") == "keep_all":

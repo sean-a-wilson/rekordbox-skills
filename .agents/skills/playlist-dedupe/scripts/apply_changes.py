@@ -113,7 +113,12 @@ def collect_actions(manifest: dict):
 
     Refuses while any group is still `pending` (an undecided version variant) --
     this enforces "no default for variants": the user must rule on each one
-    (decide.py) before anything is written. `keep_all` groups are skipped."""
+    (decide.py) before anything is written. `keep_all` groups are skipped.
+
+    Also refuses while any `collapse` group has an unset scope: scope is never
+    assumed, so the operator must explicitly choose target_only or everywhere
+    (decide.py --scope) for every removal -- the user is always asked whether a
+    removal should reach beyond the playlist being deduped."""
     groups = manifest.get("groups", [])
     pending = [g for g in groups if g.get("decision") == "pending"]
     if pending:
@@ -127,6 +132,21 @@ def collect_actions(manifest: dict):
         raise SystemExit(
             f"{len(pending)} group(s) are still PENDING and must be decided before "
             f"applying. Resolve each with decide.py (keep one copy, or --keep-both):\n"
+            + "\n".join(lines)
+        )
+
+    unset_scope = [g for g in groups
+                   if g.get("decision") == "collapse"
+                   and g.get("scope") not in ("target_only", "everywhere")]
+    if unset_scope:
+        lines = []
+        for g in unset_scope:
+            who = g.get("members", [{}])[0]
+            lines.append(f"  - {who.get('artist','?')} - {who.get('title','?')}")
+        raise SystemExit(
+            f"{len(unset_scope)} collapse group(s) have NO scope chosen. Scope is "
+            f"never assumed -- choose per group with decide.py "
+            f"(--scope everywhere or --scope target-only) before applying:\n"
             + "\n".join(lines)
         )
 
