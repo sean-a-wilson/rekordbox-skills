@@ -1,29 +1,23 @@
 # version-finder — data model & matching notes
 
-The schema details and matching rules the scripts rely on. All access is
-**read-only** through `pyrekordbox` (the `master.db` is an encrypted SQLCipher
-database — never open it with plain `sqlite3`).
+The shared schema basics (DjmdContent / DjmdSongPlaylist / DjmdPlaylist fields,
+`split_title` markers, the playlist index) live in the canonical reference:
 
-## Tables & fields used
+➡ [`../../../shared/references/data-model.md`](../../../shared/references/data-model.md)
 
-- **`DjmdContent`** — one row per track/file. Fields read (via
-  `rb_common.track_facts`, plus `Commnt` read directly in `find_versions.py`):
-  - `ID` — content id. **A string, not an int** — compare as a string when
-    joining to playlist membership.
-  - `Title`, `Artist` (a relationship → `.Name`), `Remixer` (relationship).
-  - `BPM` — stored as an **integer ×100** (`11477` → `114.77`); always divide via
-    `track_facts`, never display raw.
-  - `Key` — a **relationship** (`Key.ScaleName`); may be empty → shown as `—`.
-  - `BitRate`, `FileSize`, `Length` (seconds), `FolderPath` (for the extension /
-    lossless test).
-  - `Commnt` — **note the spelling, no `e`.** Free text; may already hold MIK
-    energy/key text. Read for the relationship token (below), parsed as a
-    delimited token rather than assuming the whole field is the link.
-- **`DjmdSongPlaylist`** — membership rows. Filter
-  `DjmdSongPlaylist.ContentID == str(content_id)` to find every playlist a file is
-  in; `PlaylistID` (string) joins to the playlist index.
-- **`DjmdPlaylist`** — playlist/folder nodes; `rb_common.build_playlist_index` +
-  `playlist_path` walk `ParentID` up to the root for the full folder path.
+All access here is **read-only** through `pyrekordbox` (the `master.db` is an
+encrypted SQLCipher database — never open it with plain `sqlite3`). The notes below
+are the version-finder-specific matching rules and field quirks.
+
+## Field quirks this skill leans on
+
+- **`Commnt`** — note the spelling, **no `e`.** Free text read directly in
+  `find_versions.py` (alongside `rb_common.track_facts`); may already hold MIK
+  energy/key text. Parsed for the relationship token below as a delimited token,
+  not by assuming the whole field is the link. **Never written.**
+- **String IDs.** `ID` in `DjmdContent` / `DjmdPlaylist` / `DjmdSongPlaylist` is a
+  **string, not an int** — compare as a string when joining content to membership.
+- `Key` is a relationship (`Key.ScaleName`); may be empty → shown as `—`.
 
 ## Version grouping & one-row-per-file
 
@@ -71,7 +65,6 @@ cell). The skill **never writes** this field.
 ## Constraints
 
 - **Read-only throughout** — no writes, no apply step; rekordbox can stay open.
-- IDs in `DjmdContent` / `DjmdPlaylist` / `DjmdSongPlaylist` are **strings**.
 - A song can be in **0 playlists** (imported, not crated) → Playlists shows `—`.
 - Backup playlists (path contains a `--exclude-path` term, default `Backup`) are
   still **shown but flagged** (`[+N protected]`), never hidden.

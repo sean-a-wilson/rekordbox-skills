@@ -86,8 +86,9 @@ The token can sit anywhere in the field, so it coexists with MIK energy/key text
 
 ## Running the scripts directly (development)
 
-Run from the `scripts/` directory (they import a shared `rb_common.py` by relative
-import):
+The scripts import shared helpers from `.agents/shared/` (they add it to
+`sys.path` themselves, so they run from anywhere — the `cd scripts` below is just
+for brevity):
 
 ```sh
 cd scripts

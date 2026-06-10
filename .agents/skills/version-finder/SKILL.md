@@ -45,8 +45,9 @@ Python scripts** so runs are deterministic — you orchestrate and relay.
 If `pyrekordbox` is missing, install it once:
 `pip3 install pyrekordbox --break-system-packages`
 
-Scripts live in `scripts/` and are run with `python3` from that directory (they
-import a shared `rb_common.py`). The data model is documented in
+Scripts live in `scripts/` and are run with `python3` (they import shared helpers
+from `.agents/shared/`, added to `sys.path` automatically, so the working
+directory doesn't matter). The data model is documented in
 `references/data-model.md`.
 
 **Everything here is read-only — rekordbox can stay open.**

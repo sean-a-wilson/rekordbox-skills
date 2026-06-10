@@ -23,6 +23,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Make the shared module dir (.agents/shared) importable -- one canonical copy,
+# no symlinks, runnable from anywhere. Must precede the rb_common import.
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "shared"))
+
 from rb_common import normalize, split_title  # noqa: E402
 from find_versions import (  # noqa: E402
     clean_base,
