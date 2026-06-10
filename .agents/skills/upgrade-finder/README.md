@@ -97,8 +97,9 @@ are already best-quality and skipped.
 
 ## Running the scripts directly (development)
 
-Run from the `scripts/` directory (they import a shared `rb_common.py` by relative
-import):
+The scripts import shared helpers from `.agents/shared/` (they add it to
+`sys.path` themselves, so they run from anywhere — the `cd scripts` below is just
+for brevity):
 
 ```sh
 cd scripts

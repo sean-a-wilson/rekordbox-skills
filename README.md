@@ -4,8 +4,10 @@ A collection of [Claude Code](https://claude.com/claude-code) skills to help
 manage a [rekordbox](https://rekordbox.com) library — clone it, point Claude at
 it, and ask in plain language.
 
-> macOS / Linux only. Setup relies on symlinks committed to the repo, which don't
-> work on Windows.
+> macOS / Linux only. Skill **discovery** relies on `.claude/skills/` symlinks
+> committed to the repo, which don't resolve on Windows. (The skills' shared Python
+> code is plain `sys.path` imports with no symlinks, so that part is portable — but
+> Claude Code still won't find the skills on Windows without the discovery symlinks.)
 
 **Disclaimer:** I do not support the use of AI in music making, DJing or any form of the Arts. I do think AI can be used to automate the mundane.
 
@@ -32,6 +34,10 @@ Each skill's own README explains what it does and how to use it.
 ## How it's laid out
 
 - Canonical skill files live under `.agents/skills/<name>/`.
+- Helper code shared across skills lives once under `.agents/shared/`
+  (`rb_common.py`, `resolve_playlist.py`, `apply_core.py`, and the canonical
+  `references/data-model.md`). Each skill's scripts add that directory to
+  `sys.path` and import from it — one copy on disk, no symlinks.
 - A committed symlink `.claude/skills/<name> -> ../../.agents/skills/<name>` is what
   Claude Code discovers (Claude Code only scans `.claude/skills/`, not `.agents/`).
 

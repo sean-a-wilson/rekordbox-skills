@@ -29,11 +29,19 @@ authoritative for its workflow, schema, and guardrails (see e.g.
 ## How it's laid out
 
 - Canonical skill files live under `.agents/skills/<name>/` — **edit these.**
+- Code shared across skills lives **once** under `.agents/shared/` — `rb_common.py`
+  (DB access, matching, ranking), `resolve_playlist.py`, `apply_core.py` (the write
+  engine), and the canonical `references/data-model.md`. There is exactly one copy
+  on disk; do not re-copy these into a skill. Skills reach them by putting the
+  shared dir on `sys.path` (see *Adding a new skill*) — plain Python imports, **no
+  symlinks**, so the shared code is portable (Windows included).
 - A committed symlink `.claude/skills/<name> -> ../../.agents/skills/<name>` is what
   Claude Code's skill discovery scans (it only looks in `.claude/skills/`, not
   `.agents/`). The symlink points straight at the canonical files, so edits under
   `.agents/skills/` take effect immediately — never edit through the symlink path.
-- Committed symlinks are followed on macOS/Linux but **not Windows**.
+- These **discovery symlinks** are followed on macOS/Linux but **not Windows** —
+  this is the repo's only Windows limitation (the shared Python code above is not
+  symlink-based).
 
 ## Adding a new skill
 
@@ -45,8 +53,25 @@ Follow the same shape as the existing skills so they stay consistent and discove
      out what the skill does and when to use it, including example user phrasings).
    - `README.md` — **always include one**, written for a human reading the folder:
      what the skill does, prerequisites, how to use it, and safety notes.
-   - `scripts/` for any code (run from that directory; share helpers via relative
-     import like `rb_common.py`) and `references/` for deeper notes (schema, design).
+   - `scripts/` for any code. **Reuse the shared helpers** in `.agents/shared/`
+     rather than copying them — if your script needs DB access, matching, playlist
+     resolution, or the write engine, import from there. Put the shared dir on
+     `sys.path` first with this stanza (before the `from rb_common import …` line),
+     then import normally:
+
+     ```python
+     import sys
+     from pathlib import Path
+     sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "shared"))
+     from rb_common import get_db, track_facts  # etc.
+     ```
+
+     `parents[3]` resolves `.agents/skills/<name>/scripts/<file>.py` up to
+     `.agents/`, so `.agents/shared/` is found from any skill, run from anywhere —
+     no symlinks, works on Windows. For a write step, keep `apply_changes.py` a thin
+     shim that supplies your skill's message strings and calls `apply_core.main(...)`
+     (see playlist-dedupe / upgrade-finder). `references/` holds deeper notes; link
+     the shared `references/data-model.md` instead of restating the schema.
 2. **Create the discovery symlink** so Claude Code can find it (it only scans
    `.claude/skills/`). Use a **relative** target so it resolves on any clone:
 
@@ -77,12 +102,16 @@ When the user says **"Create a project [name]"** (or "start a project for X", "n
 
   (Skill scripts find the DB on their own via `pyrekordbox`, so `--add-dir` is only
   for the agent's own file access.)
-- **Running a skill's scripts**: run them from that skill's `scripts/` directory —
-  they import a shared `rb_common.py` by relative import. Example:
+- **Running a skill's scripts**: each script puts `.agents/shared/` on `sys.path`
+  via a `__file__`-relative stanza, so it imports the shared `rb_common.py` (and
+  friends) no matter the working directory — you can run it from the `scripts/` dir
+  or by full path. Example:
 
   ```sh
   cd .agents/skills/playlist-dedupe/scripts
   python3 test_matcher.py
+  # or, from the repo root:
+  python3 .agents/skills/playlist-dedupe/scripts/test_matcher.py
   ```
 - **Dependency** (for skills that touch the DB): `pip3 install pyrekordbox --break-system-packages`.
   `master.db` is an encrypted SQLCipher database — always open it through

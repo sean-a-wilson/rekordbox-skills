@@ -22,6 +22,12 @@ import argparse
 import json
 from datetime import datetime, timezone
 
+# Make the shared module dir (.agents/shared) importable -- one canonical copy,
+# no symlinks, runnable from anywhere. Must precede the rb_common import.
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "shared"))
+
 from rb_common import (
     DEFAULT_ARTIST_THRESHOLD,
     DEFAULT_TITLE_THRESHOLD,

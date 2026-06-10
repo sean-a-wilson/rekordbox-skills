@@ -31,9 +31,10 @@ are deterministic and cheap -- you orchestrate and relay, the scripts decide.
 If `pyrekordbox` is missing, install it once:
 `pip3 install pyrekordbox --break-system-packages`
 
-Scripts live in `scripts/` and are run with `python3` from that directory (they
-import a shared `rb_common.py`). Read `references/data-model.md` if you need to
-go beyond what the scripts expose.
+Scripts live in `scripts/` and are run with `python3` (they import shared helpers
+from `.agents/shared/`, added to `sys.path` automatically, so the working
+directory doesn't matter). Read `references/data-model.md` if you need to go beyond
+what the scripts expose.
 
 ## The workflow at a glance
 

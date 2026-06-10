@@ -28,6 +28,11 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Make the shared module dir (.agents/shared) importable -- one canonical copy,
+# no symlinks, runnable from anywhere. Must precede the rb_common import.
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "shared"))
+
 from rb_common import (
     build_playlist_index,
     get_db,

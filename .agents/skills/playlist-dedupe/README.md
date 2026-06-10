@@ -85,8 +85,9 @@ You can always override the recommendation during review.
 
 ## Running the scripts directly (development)
 
-Scripts must be run from the `scripts/` directory (they import a shared
-`rb_common.py` by relative import):
+The scripts import shared helpers from `.agents/shared/` (they add it to
+`sys.path` themselves, so they run from anywhere — the `cd scripts` below is just
+for brevity):
 
 ```sh
 cd scripts
